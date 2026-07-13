@@ -1,0 +1,83 @@
+import { act, renderHook } from "@testing-library/react";
+import { PropsWithChildren } from "react";
+
+import useStackContext from "@hooks/useStackContext";
+import type { PathTuple } from "@models/index";
+import StackLinkProvider from "@/provider";
+
+import useStackLinkBack from "./index";
+
+const mockRouter = {
+  push: jest.fn(),
+  back: jest.fn(),
+  prefetch: jest.fn(),
+};
+
+jest.mock("next/navigation", () => ({
+  useRouter: () => mockRouter,
+}));
+
+const path: PathTuple = ["https://a.com/from", "/to"];
+
+const renderBack = () => {
+  const wrapper = ({ children }: PropsWithChildren) => (
+    <StackLinkProvider>{children}</StackLinkProvider>
+  );
+  return renderHook(
+    () => ({ back: useStackLinkBack(), ctx: useStackContext() }),
+    { wrapper },
+  );
+};
+
+describe("useStackLinkBack", () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  describe("canGoBack", () => {
+    it("history가 비어 있으면 false다.", () => {
+      const { result } = renderBack();
+
+      expect(result.current.back.canGoBack).toBe(false);
+    });
+
+    it("history가 있으면 true다.", () => {
+      const { result } = renderBack();
+
+      act(() => result.current.ctx.push(path));
+
+      expect(result.current.back.canGoBack).toBe(true);
+    });
+  });
+
+  describe("goBack - none 애니메이션", () => {
+    it("타이머 없이 즉시 router.back을 호출하고 history를 pop한다.", () => {
+      const { result } = renderBack();
+
+      act(() => result.current.ctx.push(path));
+      act(() => result.current.back.goBack({ animation: "none" }));
+
+      expect(mockRouter.back).toHaveBeenCalledTimes(1);
+      expect(result.current.ctx.history).toEqual([]);
+    });
+  });
+
+  describe("goBack - slide 애니메이션", () => {
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => jest.useRealTimers());
+
+    it("애니메이션 시간(240ms) 경과 후 router.back을 호출하고 pop한다.", () => {
+      const { result } = renderBack();
+
+      act(() => result.current.ctx.push(path));
+      act(() => result.current.back.goBack({ animation: "slide" }));
+
+      expect(mockRouter.back).not.toHaveBeenCalled();
+
+      act(() => {
+        jest.advanceTimersByTime(240);
+      });
+
+      expect(mockRouter.back).toHaveBeenCalledTimes(1);
+      expect(result.current.ctx.history).toEqual([]);
+    });
+  });
+});
