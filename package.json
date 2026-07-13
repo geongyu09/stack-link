@@ -7,6 +7,21 @@
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/geongyu09/stack-link.git"
+  },
+  "homepage": "https://github.com/geongyu09/stack-link",
+  "keywords": [
+    "nextjs",
+    "react",
+    "navigation",
+    "page-transition",
+    "prefetch",
+    "link",
+    "webview"
+  ],
+  "sideEffects": false,
   "files": [
     "dist"
   ],
@@ -17,7 +32,8 @@
     "test": "jest",
     "lint": "eslint",
     "lint:fix": "eslint --fix",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "prepublishOnly": "yarn type-check && yarn test && yarn build"
   },
   "peerDependencies": {
     "next": "^15.3.0",
