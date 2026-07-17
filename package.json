@@ -1,7 +1,7 @@
 {
   "name": "stack-link",
   "version": "0.1.0",
-  "description": "Next.js 웹 애플리케이션에서 네이티브 앱과 같은 부드러운 페이지 전환을 제공하는 네비게이션 최적화 라이브러리",
+  "description": "A navigation optimization library that delivers native-app-like, smooth page transitions in Next.js web applications",
   "license": "MIT",
   "packageManager": "yarn@4.9.3",
   "main": "./dist/index.js",
