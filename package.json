@@ -1,6 +1,6 @@
 {
   "name": "stack-link",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A navigation optimization library that delivers native-app-like, smooth page transitions in Next.js web applications",
   "license": "MIT",
   "packageManager": "yarn@4.9.3",
