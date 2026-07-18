@@ -15,6 +15,7 @@ const mockRouter = {
 
 jest.mock("next/navigation", () => ({
   useRouter: () => mockRouter,
+  usePathname: () => "/",
 }));
 
 const path: PathTuple = ["https://a.com/from", "/to"];
@@ -48,36 +49,24 @@ describe("useStackLinkBack", () => {
     });
   });
 
-  describe("goBack - none 애니메이션", () => {
-    it("타이머 없이 즉시 router.back을 호출하고 history를 pop한다.", () => {
-      const { result } = renderBack();
-
-      act(() => result.current.ctx.push(path));
-      act(() => result.current.back.goBack({ animation: "none" }));
-
-      expect(mockRouter.back).toHaveBeenCalledTimes(1);
-      expect(result.current.ctx.history).toEqual([]);
-    });
-  });
-
-  describe("goBack - slide 애니메이션", () => {
-    beforeEach(() => jest.useFakeTimers());
-    afterEach(() => jest.useRealTimers());
-
-    it("애니메이션 시간(240ms) 경과 후 router.back을 호출하고 pop한다.", () => {
+  describe("goBack (View Transition 미지원 폴백)", () => {
+    it("router.back을 호출하고 history를 pop한다.", () => {
       const { result } = renderBack();
 
       act(() => result.current.ctx.push(path));
       act(() => result.current.back.goBack({ animation: "slide" }));
 
-      expect(mockRouter.back).not.toHaveBeenCalled();
-
-      act(() => {
-        jest.advanceTimersByTime(240);
-      });
-
       expect(mockRouter.back).toHaveBeenCalledTimes(1);
       expect(result.current.ctx.history).toEqual([]);
+    });
+
+    it("인자 없이 호출해도 동작한다.", () => {
+      const { result } = renderBack();
+
+      act(() => result.current.ctx.push(path));
+      act(() => result.current.back.goBack());
+
+      expect(mockRouter.back).toHaveBeenCalledTimes(1);
     });
   });
 });
