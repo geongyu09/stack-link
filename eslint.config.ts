@@ -7,10 +7,15 @@ export default defineConfig([
   {
     ignores: [
       "node_modules/",
+      ".yarn/",
+      ".pnp.cjs",
+      ".pnp.loader.mjs",
       ".next/",
       "out/",
       "public/",
       "dist/",
+      // 데모 앱은 별도 Next 프로젝트 → 라이브러리 type-aware 파싱 대상에서 제외
+      "examples/",
       // tsconfig의 include(src)에 없는 루트 설정 파일들은 type-aware 파싱 대상에서 제외
       "*.config.{js,ts,mjs}",
       "jest.setup.js",
