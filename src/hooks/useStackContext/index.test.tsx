@@ -5,6 +5,11 @@ import StackLinkProvider from "@/provider";
 
 import useStackContext from "./index";
 
+jest.mock("next/navigation", () => ({
+  useRouter: () => ({ push: jest.fn(), back: jest.fn(), prefetch: jest.fn() }),
+  usePathname: () => "/",
+}));
+
 describe("useStackContext", () => {
   it("Provider 외부에서 호출하면 에러를 던진다.", () => {
     // React가 콘솔에 에러를 출력하므로 억제

@@ -6,8 +6,15 @@ import type { PathTuple } from "@models/index";
 
 import StackLinkProvider from "./index";
 
+const mockRouter = {
+  push: jest.fn(),
+  back: jest.fn(),
+  prefetch: jest.fn(),
+};
+
 jest.mock("next/navigation", () => ({
-  useRouter: () => ({ push: jest.fn(), back: jest.fn(), prefetch: jest.fn() }),
+  useRouter: () => mockRouter,
+  usePathname: () => "/",
 }));
 
 const wrapper = ({ children }: PropsWithChildren) => (
@@ -15,12 +22,12 @@ const wrapper = ({ children }: PropsWithChildren) => (
 );
 
 describe("StackLinkProvider", () => {
-  it("stack-main, stack-root, stack-previous 컨테이너를 렌더링한다.", () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it("stack-main 컨테이너를 렌더링한다.", () => {
     render(<StackLinkProvider>content</StackLinkProvider>);
 
     expect(document.getElementById("stack-main")).toBeInTheDocument();
-    expect(document.getElementById("stack-root")).toBeInTheDocument();
-    expect(document.getElementById("stack-previous")).toBeInTheDocument();
   });
 
   it("children을 stack-main 안에 렌더링한다.", () => {
@@ -29,12 +36,19 @@ describe("StackLinkProvider", () => {
     expect(document.getElementById("stack-main")).toHaveTextContent("hello");
   });
 
-  it("history가 비어 있으면 GoBackTrigger와 이전 화면 iframe을 렌더링하지 않는다.", () => {
+  it("View Transition 스타일을 head에 1회 주입한다.", () => {
     render(<StackLinkProvider>content</StackLinkProvider>);
+    render(<StackLinkProvider>content2</StackLinkProvider>);
 
     expect(
-      document.getElementById("stack-previous")?.querySelector("iframe"),
-    ).toBeNull();
+      document.querySelectorAll("#stack-link-view-transition-style"),
+    ).toHaveLength(1);
+  });
+
+  it("history가 비어 있으면 GoBackTrigger를 렌더링하지 않는다.", () => {
+    render(<StackLinkProvider>content</StackLinkProvider>);
+
+    expect(document.querySelector('[role="button"]')).toBeNull();
   });
 
   describe("history 상태 관리", () => {
@@ -57,16 +71,75 @@ describe("StackLinkProvider", () => {
 
       expect(result.current.history).toEqual([path]);
     });
+  });
 
-    it("history가 있으면 이전 화면 iframe을 마지막 항목의 현재 경로로 렌더링한다.", () => {
+  describe("runForward / runBack (폴백: View Transition 미지원)", () => {
+    it("runForward는 history에 push하고 router.push(href)를 즉시 호출한다.", () => {
       const { result } = renderHook(() => useStackContext(), { wrapper });
 
-      act(() => result.current.push(path));
+      act(() => result.current.runForward("/next"));
 
-      const iframe = document
-        .getElementById("stack-previous")
-        ?.querySelector("iframe");
-      expect(iframe).toHaveAttribute("src", "https://a.com/from");
+      expect(mockRouter.push).toHaveBeenCalledWith("/next");
+      expect(result.current.history).toEqual([[window.location.href, "/next"]]);
+    });
+
+    it("runBack은 router.back을 호출하고 history를 pop한다.", () => {
+      const { result } = renderHook(() => useStackContext(), { wrapper });
+
+      act(() => result.current.push(["https://a.com/from", "/to"]));
+      act(() => result.current.runBack());
+
+      expect(mockRouter.back).toHaveBeenCalledTimes(1);
+      expect(result.current.history).toEqual([]);
+    });
+
+    it("history가 비어 있으면 runBack이 아무것도 하지 않는다.", () => {
+      const { result } = renderHook(() => useStackContext(), { wrapper });
+
+      act(() => result.current.runBack());
+
+      expect(mockRouter.back).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("runForward (View Transition 지원)", () => {
+    let capturedAnim: string | undefined;
+
+    beforeEach(() => {
+      capturedAnim = undefined;
+      document.startViewTransition = jest.fn((cb?: () => void) => {
+        capturedAnim = document.documentElement.dataset.stackAnim;
+        cb?.();
+        return {
+          finished: Promise.resolve(),
+          ready: Promise.resolve(),
+          updateCallbackDone: Promise.resolve(),
+          skipTransition: () => {},
+        };
+      }) as unknown as typeof document.startViewTransition;
+    });
+
+    afterEach(() => {
+      delete document.startViewTransition;
+    });
+
+    it("startViewTransition을 호출하고 방향/애니메이션 data 속성을 설정한다.", () => {
+      const { result } = renderHook(() => useStackContext(), { wrapper });
+
+      act(() => result.current.runForward("/next", { animation: "slide" }));
+
+      expect(document.startViewTransition).toHaveBeenCalledTimes(1);
+      expect(capturedAnim).toBe("forward-slide");
+      expect(mockRouter.push).toHaveBeenCalledWith("/next");
+    });
+
+    it("animation:'none'이면 View Transition 없이 즉시 커밋한다.", () => {
+      const { result } = renderHook(() => useStackContext(), { wrapper });
+
+      act(() => result.current.runForward("/next", { animation: "none" }));
+
+      expect(document.startViewTransition).not.toHaveBeenCalled();
+      expect(mockRouter.push).toHaveBeenCalledWith("/next");
     });
   });
 
