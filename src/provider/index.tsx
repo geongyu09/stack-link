@@ -24,6 +24,7 @@ import {
   getViewTransitionAnimations,
   injectStackStyles,
   prefersReducedMotion,
+  ROUTE_COMMIT_TIMEOUT,
   setTransitionVars,
   supportsViewTransition,
 } from "@/utils";
@@ -100,16 +101,20 @@ export default function StackLinkProvider({
         () =>
           new Promise<void>((resolve) => {
             finishRef.current = resolve;
-            // 라우트가 바뀌지 않아 화면이 얼어붙는 것을 방지하는 안전장치
-            safetyRef.current = setTimeout(() => {
-              if (finishRef.current) {
-                finishRef.current();
-                finishRef.current = null;
-              }
-            }, dur + 400);
             commit();
           }),
       );
+
+      // 라우트가 바뀌지 않아 화면이 얼어붙는 것을 방지하는 안전장치.
+      // 미커밋 상태에서 콜백만 resolve하면 DOM이 아직 이전 화면이라 old == new
+      // 스냅샷이 잡히고, 진짜 화면 교체는 전환 종료 후 애니메이션 없이 일어난다.
+      // 그래서 "확정" 대신 전환 자체를 포기(skip)해 상태를 깨끗이 정리한다.
+      safetyRef.current = setTimeout(() => {
+        if (!finishRef.current) return;
+        finishRef.current();
+        finishRef.current = null;
+        transition.skipTransition();
+      }, ROUTE_COMMIT_TIMEOUT);
 
       transition.finished.finally(() => {
         if (safetyRef.current) {
@@ -171,6 +176,9 @@ export default function StackLinkProvider({
       // 전환 라이프사이클 동안 유지되는 로컬 상태
       let animations: Animation[] = [];
       let ready = false;
+      // 전환이 스킵됐는지(커밋 타임아웃 등). 이 경우 애니메이션은 없지만
+      // 라우팅/히스토리 상태는 그대로 정합성을 맞춰야 한다.
+      let skipped = false;
       // 손가락이 마지막으로 가리킨 진행률 (ready 이전 이동은 여기 저장했다가 적용)
       let pendingProgress = 0;
       // ready 이전에 손을 놓은 경우의 커밋 결정 (null = 아직 진행 중)
@@ -187,18 +195,25 @@ export default function StackLinkProvider({
         }
       };
 
-      const settle = (commit: boolean) => {
+      // 애니메이션과 무관하게 라우팅/히스토리 상태만 확정한다.
+      // 전환이 스킵돼 애니메이션이 없는 경우에도 이 정합성은 반드시 맞춰야 한다.
+      const settleState = (commit: boolean) => {
         if (commit) {
-          // 현재 지점에서 끝까지 재생 → 뒤로가기 확정
           handleGoBack();
           pop();
-          for (const animation of animations) animation.play();
         } else {
-          // 현재 지점에서 되감기 → 취소. router.back()으로 이미 바뀐 경로를
-          // 되돌리기 위해 forward를 먼저 호출한다. 스냅샷이 화면을 덮고 있는 동안
-          // 실제 DOM이 원래 화면으로 복귀하므로 깜빡임을 최소화한다.
+          // router.back()으로 이미 바뀐 경로를 되돌린다. 스냅샷이 화면을 덮고 있는
+          // 동안 실제 DOM이 원래 화면으로 복귀하므로 깜빡임을 최소화한다.
           router.forward();
-          for (const animation of animations) animation.reverse();
+        }
+      };
+
+      const settle = (commit: boolean) => {
+        settleState(commit);
+        // 확정이면 현재 지점에서 끝까지 재생, 취소면 현재 지점에서 되감기.
+        for (const animation of animations) {
+          if (commit) animation.play();
+          else animation.reverse();
         }
       };
 
@@ -206,16 +221,19 @@ export default function StackLinkProvider({
         () =>
           new Promise<void>((resolve) => {
             finishRef.current = resolve;
-            // 경로가 바뀌지 않아 ready가 걸리는 것을 방지하는 안전장치
-            safetyRef.current = setTimeout(() => {
-              if (finishRef.current) {
-                finishRef.current();
-                finishRef.current = null;
-              }
-            }, dur + 400);
             router.back();
           }),
       );
+
+      // 경로가 바뀌지 않아 ready가 걸리는 것을 방지하는 안전장치.
+      // 커밋 전에 전환을 확정하면 old == new 스냅샷이 재생되고 실제 화면 교체는
+      // 전환이 끝난 뒤 애니메이션 없이 일어나므로, 확정 대신 전환을 포기한다.
+      safetyRef.current = setTimeout(() => {
+        if (!finishRef.current) return;
+        finishRef.current();
+        finishRef.current = null;
+        transition.skipTransition();
+      }, ROUTE_COMMIT_TIMEOUT);
 
       transition.ready
         .then(() => {
@@ -228,15 +246,18 @@ export default function StackLinkProvider({
             animation.pause();
           }
           ready = true;
-          if (endedCommit !== null) {
-            settle(endedCommit);
-          } else {
-            applyProgress(pendingProgress);
-          }
+          // ready 이전에 손을 놓았더라도, 먼저 손가락이 마지막으로 가리킨 지점까지
+          // 스크럽한 뒤 마무리해야 한다. 곧바로 settle하면 currentTime이 0인 채로
+          // play/reverse가 걸려 사용자가 끈 거리가 통째로 버려진다.
+          applyProgress(pendingProgress);
+          if (endedCommit !== null) settle(endedCommit);
         })
         .catch(() => {
-          // ready 실패 시(전환 스킵 등) 취소로 종료됐다면 경로만 되돌린다.
-          if (endedCommit === false) router.forward();
+          // 전환이 스킵됐다(커밋 타임아웃 등). 애니메이션은 재생할 수 없지만
+          // 라우팅/히스토리 상태는 맞춰야 한다. 아직 손을 놓지 않았다면
+          // 이후 finish()가 skipped 경로로 같은 처리를 한다.
+          skipped = true;
+          if (endedCommit !== null) settleState(endedCommit);
         });
 
       transition.finished.finally(() => {
@@ -256,6 +277,7 @@ export default function StackLinkProvider({
         },
         finish: (commit: boolean) => {
           if (ready) settle(commit);
+          else if (skipped) settleState(commit);
           else endedCommit = commit;
         },
       };

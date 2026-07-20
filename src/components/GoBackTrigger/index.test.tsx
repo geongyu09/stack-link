@@ -3,6 +3,7 @@ import { useEffect } from "react";
 
 import useStackContext from "@hooks/useStackContext";
 import StackLinkProvider from "@/provider";
+import { ROUTE_COMMIT_TIMEOUT } from "@/utils";
 
 const mockRouter = {
   push: jest.fn(),
@@ -100,7 +101,9 @@ describe("GoBackTrigger 인터랙티브 스크럽 (View Transition 지원)", () 
 
   let anims: MockAnim[];
   let readyResolve: () => void;
+  let readyReject: (reason?: unknown) => void;
   let finishedResolve: () => void;
+  let skipTransition: jest.Mock;
 
   const makeAnim = (): MockAnim => ({
     effect: {
@@ -138,17 +141,20 @@ describe("GoBackTrigger 인터랙티브 스크럽 (View Transition 지원)", () 
     });
     anims = [makeAnim(), makeAnim()];
 
+    skipTransition = jest.fn();
+
     document.startViewTransition = jest.fn((cb?: () => void) => {
       cb?.(); // executor 실행: finishRef 설정 + router.back() 호출
       return {
-        ready: new Promise<void>((r) => {
-          readyResolve = r;
+        ready: new Promise<void>((res, rej) => {
+          readyResolve = res;
+          readyReject = rej;
         }),
         finished: new Promise<void>((r) => {
           finishedResolve = r;
         }),
         updateCallbackDone: Promise.resolve(),
-        skipTransition: () => {},
+        skipTransition,
       };
     }) as unknown as typeof document.startViewTransition;
 
@@ -263,5 +269,107 @@ describe("GoBackTrigger 인터랙티브 스크럽 (View Transition 지원)", () 
       finishedResolve();
       await Promise.resolve();
     });
+  });
+
+  // ready는 라우트 커밋(RSC 페치)이 끝나야 resolve되므로, 스와이프가 빠르거나
+  // 커밋이 느리면 "손을 놓은 시점 > ready"가 된다. 이 순서에서도 애니메이션이
+  // 처음부터 다시 재생되지 않아야 한다.
+  it("ready 이전에 손을 놓아도 스크럽 위치를 보존한 뒤 이어 재생한다.", async () => {
+    const W = window.innerWidth;
+    const trigger = mount();
+    const commitX = Math.round(0.6 * W);
+
+    act(() => fireEvent.pointerDown(trigger, { pointerId: 1, clientX: 0 }));
+    act(() => fireEvent.pointerMove(trigger, { pointerId: 1, clientX: 30 }));
+    act(() => fireEvent.pointerMove(trigger, { pointerId: 1, clientX: commitX }));
+    // 아직 ready 전에 손을 놓는다 (느린 라우트 커밋 상황)
+    act(() => fireEvent.pointerUp(trigger, { pointerId: 1, clientX: commitX }));
+
+    for (const a of anims) expect(a.play).not.toHaveBeenCalled();
+
+    await flushReady();
+
+    // 회귀 방지: currentTime이 0이 아니라 손을 놓은 지점(60%)이어야 한다.
+    // 0이면 사용자가 끈 거리가 통째로 버려져 애니메이션이 처음부터 재생된다.
+    for (const a of anims) {
+      expect(a.currentTime).toBeCloseTo(0.6 * DUR, 0);
+      expect(a.play).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  // 커밋 전에 전환을 "확정"해버리면 old == new 스냅샷이 재생되고 실제 화면 교체는
+  // 전환 종료 후 애니메이션 없이 일어난다(화면이 "툭" 바뀌는 증상). 그래서 확정 대신
+  // 전환을 포기하되, 라우팅/히스토리 상태는 정합성을 유지해야 한다.
+  it("라우트 커밋이 타임아웃을 넘기면 전환을 확정하지 않고 포기한다.", async () => {
+    const trigger = mount();
+    const commitX = Math.round(0.6 * window.innerWidth);
+
+    act(() => fireEvent.pointerDown(trigger, { pointerId: 1, clientX: 0 }));
+    act(() => fireEvent.pointerMove(trigger, { pointerId: 1, clientX: 30 }));
+    act(() => fireEvent.pointerMove(trigger, { pointerId: 1, clientX: commitX }));
+    act(() => fireEvent.pointerUp(trigger, { pointerId: 1, clientX: commitX }));
+
+    act(() => {
+      jest.advanceTimersByTime(ROUTE_COMMIT_TIMEOUT);
+    });
+    expect(skipTransition).toHaveBeenCalledTimes(1);
+
+    // 전환이 스킵돼 ready가 reject되더라도 뒤로가기 확정(history pop)은 이뤄져야 한다.
+    await act(async () => {
+      readyReject(new Error("Transition was skipped"));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getTrigger()).toBeNull();
+    expect(mockRouter.forward).not.toHaveBeenCalled();
+  });
+
+  it("짧은 거리라도 빠르게 튕기면(플링) 뒤로가기를 확정한다.", async () => {
+    const trigger = mount();
+    let clock = 1000;
+    const nowSpy = jest
+      .spyOn(performance, "now")
+      .mockImplementation(() => clock);
+
+    try {
+      act(() => fireEvent.pointerDown(trigger, { pointerId: 1, clientX: 0 }));
+      act(() => fireEvent.pointerMove(trigger, { pointerId: 1, clientX: 30 }));
+      await flushReady();
+      clock += 10;
+      // 10ms 동안 100px 이동 = 10px/ms → FLING_VELOCITY(0.4) 초과
+      act(() => fireEvent.pointerMove(trigger, { pointerId: 1, clientX: 130 }));
+      act(() => fireEvent.pointerUp(trigger, { pointerId: 1, clientX: 130 }));
+
+      // 이동 거리는 13%로 COMMIT_FRACTION(20%) 미만이지만 속도로 확정된다.
+      for (const a of anims) expect(a.play).toHaveBeenCalledTimes(1);
+      expect(mockRouter.forward).not.toHaveBeenCalled();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("같은 거리를 느리게 끌면 플링으로 보지 않고 취소한다.", async () => {
+    const trigger = mount();
+    let clock = 1000;
+    const nowSpy = jest
+      .spyOn(performance, "now")
+      .mockImplementation(() => clock);
+
+    try {
+      act(() => fireEvent.pointerDown(trigger, { pointerId: 1, clientX: 0 }));
+      act(() => fireEvent.pointerMove(trigger, { pointerId: 1, clientX: 30 }));
+      await flushReady();
+      clock += 1000;
+      // 1000ms 동안 100px = 0.1px/ms → 임계값 미만
+      act(() => fireEvent.pointerMove(trigger, { pointerId: 1, clientX: 130 }));
+      act(() => fireEvent.pointerUp(trigger, { pointerId: 1, clientX: 130 }));
+
+      for (const a of anims) expect(a.reverse).toHaveBeenCalledTimes(1);
+      for (const a of anims) expect(a.play).not.toHaveBeenCalled();
+      expect(mockRouter.forward).toHaveBeenCalledTimes(1);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 });
