@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.0-next.1
+
+Three fixes to the interactive back gesture introduced in `1.0.0-next.0`. All of them surface on real devices and slow networks rather than in local development, which is why they were not caught before the first prerelease.
+
+### Why this matters
+
+The interactive gesture has to coordinate two things that finish at unpredictable times: the browser's View Transition snapshot, and Next.js committing the new route (an RSC fetch). The previous implementation assumed the route would commit quickly, and each of the fixes below is a place where that assumption broke.
+
+The safety timeout that guards against a route never committing was set to `duration + 400ms` (680ms by default) — a value derived from the animation length, not from how long a network round trip takes. On a prefetch miss or a slow connection the route commit exceeded it, and the timeout then *completed* the transition while the DOM still showed the previous screen. The browser captured an outgoing and an incoming snapshot that were identical, played that no-op transition, and performed the real screen swap after the transition ended — with no animation at all. The screen appeared to jump. The timeout is now based on network round-trip time and, when it fires, abandons the transition instead of completing it, so the navigation still happens and the transition state is cleaned up rather than being left half-applied.
+
+### Fixed
+
+- **The screen could swap without animation on slow route commits.** The safety timeout is now a dedicated `ROUTE_COMMIT_TIMEOUT` constant sized for a network round trip rather than derived from the animation duration, and on expiry it abandons the transition (`skipTransition()`) instead of completing it against an uncommitted DOM. Routing and history state stay consistent either way.
+- **Releasing the gesture before the transition was ready discarded the distance you had dragged.** If you lifted your finger before `transition.ready` resolved — a fast swipe, or a slow route commit — the animation was played or reversed while its `currentTime` was still 0, so it restarted from the beginning instead of continuing from where your finger left off. The pending scrub position is now applied before the gesture settles.
+- **Fling detection never triggered.** The velocity sample was overwritten with the current pointer position before being read, so the two values compared were always identical and the computed velocity was always 0. Short but fast swipes were therefore treated as cancellations. Two samples are now retained, and a sample older than 100ms is ignored so that a gesture held still before release is not committed on stale velocity.
+
 ## 1.0.0
 
 Stack-Link now runs on the browser's native **View Transitions API** instead of iframe pre-rendering. This is a complete rewrite of the transition engine and the reason for the 1.0 release.
