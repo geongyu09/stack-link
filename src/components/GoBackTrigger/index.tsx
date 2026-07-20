@@ -14,6 +14,9 @@ const ACTIVATE_PX = 8;
 const COMMIT_FRACTION = 0.2;
 // 빠르게 튕기면 거리가 짧아도 확정하는 속도 임계값(px/ms).
 const FLING_VELOCITY = 0.4;
+// 마지막 이동 후 이 시간이 지나 손을 놓았다면 "튕김"이 아니라 멈춘 것으로 본다(ms).
+// 이 가드가 없으면 끝에서 잠시 멈췄다 뗀 제스처도 과거 속도로 오판된다.
+const STALE_SAMPLE_MS = 100;
 // View Transition을 스크럽할 수 없는 환경의 폴백 임계값(px).
 const SWIPE_THRESHOLD = 50;
 
@@ -29,9 +32,12 @@ export default memo(function GoBackTrigger() {
   const [isTouching, setIsTouching] = useState(false);
   const startXRef = useRef(0);
   const currentXRef = useRef(0);
-  // 속도 추정을 위한 직전 이동 샘플
+  // 속도 추정을 위한 최근 두 개의 이동 샘플.
+  // last = 가장 최근, prev = 그 직전. 두 샘플의 차이로 순간 속도를 구한다.
   const lastXRef = useRef(0);
   const lastTRef = useRef(0);
+  const prevXRef = useRef(0);
+  const prevTRef = useRef(0);
 
   // 이번 제스처가 인터랙티브 전환을 시작했는지 / 폴백인지
   const startedRef = useRef(false);
@@ -65,6 +71,8 @@ export default memo(function GoBackTrigger() {
       currentXRef.current = clientX;
       lastXRef.current = clientX;
       lastTRef.current = now();
+      prevXRef.current = clientX;
+      prevTRef.current = lastTRef.current;
       startedRef.current = false;
       fallbackRef.current = false;
       controllerRef.current = null;
@@ -97,7 +105,11 @@ export default memo(function GoBackTrigger() {
         }
       }
 
-      // 속도 샘플 갱신
+      // 속도 샘플 갱신 — 새 값을 덮기 전에 직전 샘플을 prev로 밀어 둬야 한다.
+      // (예전에는 last를 current와 같은 값으로만 갱신해 두 값의 차가 항상 0이었고,
+      //  그 결과 속도가 언제나 0이 되어 플링 판정이 동작하지 않았다.)
+      prevXRef.current = lastXRef.current;
+      prevTRef.current = lastTRef.current;
       lastXRef.current = clientX;
       lastTRef.current = now();
 
@@ -121,8 +133,14 @@ export default memo(function GoBackTrigger() {
     setIsTouching(false);
 
     const deltaX = currentXRef.current - startXRef.current;
-    const dt = now() - lastTRef.current;
-    const velocity = dt > 0 ? (currentXRef.current - lastXRef.current) / dt : 0;
+    // 최근 두 이동 샘플로 순간 속도를 구한다. 마지막 이동이 오래 전이면(손을 멈춘 뒤
+    // 뗀 경우) 그 속도는 더 이상 유효하지 않으므로 0으로 본다.
+    const dt = lastTRef.current - prevTRef.current;
+    const sinceLastMove = now() - lastTRef.current;
+    const velocity =
+      dt > 0 && sinceLastMove < STALE_SAMPLE_MS
+        ? (lastXRef.current - prevXRef.current) / dt
+        : 0;
 
     const controller = controllerRef.current;
     if (controller) {
